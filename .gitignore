@@ -1,0 +1,16 @@
+# Your data and secrets never belong in the repo
+/youfresh/
+/cookies/
+/takeout/
+*.zip
+# Android build output and signing keys
+android/.cache/
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/keystore.properties
+*.jks
+*.keystore
+*.apk
+__pycache__/

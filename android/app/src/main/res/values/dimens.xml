@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- no header: start the channel rows near the top of the screen -->
+    <dimen name="lb_browse_rows_margin_top">32dp</dimen>
+</resources>

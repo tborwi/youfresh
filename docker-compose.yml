@@ -1,0 +1,17 @@
+services:
+  youfresh:
+    build: ./server
+    image: youfresh:latest
+    container_name: youfresh
+    restart: unless-stopped
+    ports:
+      - "8099:8099"
+    environment:
+      - TZ=Etc/UTC                # your time zone, e.g. America/New_York or Europe/London
+      - PUID=1000                 # your user and group ids (run `id` to see them), so the
+      - PGID=1000                 #   takeout/ and cookies/ folders are yours to copy files into
+      - REFRESH_MINUTES=30        # how often to check channels for new videos
+      - HISTORY_HOURS=6           # how often to sync YouTube watch history (if cookies are added)
+    volumes:
+      # Creates ./youfresh/{takeout,cookies,data} next to this file on first start
+      - ./youfresh:/youfresh

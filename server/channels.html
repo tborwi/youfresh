@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>YouFresh Channels</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;800&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f6f5f3; --surface:#fff; --fg:#1d1a19; --muted:#6f6764; --line:#e4dfdc;
+  --accent:#14866d; --accent-soft:#dff2ec; --ok:#2f7d4f; --off:#9a918d;
+  --body:"Archivo",system-ui,sans-serif; --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme:dark){:root{
+  --bg:#151312; --surface:#1e1b1a; --fg:#eeeae8; --muted:#a39a96; --line:#332e2c;
+  --accent:#3cc29f; --accent-soft:#16352d; --ok:#5fbf86; --off:#6c6461; color-scheme:dark}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--body);font-size:15px;line-height:1.45}
+.wrap{max-width:860px;margin:0 auto;padding:28px max(16px,env(safe-area-inset-right,0px)) 64px max(16px,env(safe-area-inset-left,0px));display:grid;gap:20px}
+header{display:flex;flex-wrap:wrap;align-items:end;justify-content:space-between;gap:12px}
+h1{font-weight:800;font-size:1.9rem;letter-spacing:-.02em;margin:0}
+.sub{color:var(--muted);margin:2px 0 0;font-size:.9rem}
+.stats{display:flex;gap:16px;font-variant-numeric:tabular-nums}
+.stat b{display:block;font-size:1.4rem;font-weight:600}
+.stat span{font-size:.72rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)}
+.panel{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;gap:12px}
+.panel h2{margin:0;font-size:.75rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:600}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+input[type=text],input[type=search]{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:8px 10px;min-width:0;flex:1 1 180px}
+input.mono{font-family:var(--mono);font-size:.85rem}
+button,.btn{font:inherit;font-size:.88rem;font-weight:500;border-radius:6px;border:1px solid var(--line);background:var(--surface);color:var(--fg);padding:7px 12px;cursor:pointer;white-space:nowrap}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button:hover{border-color:var(--muted)}
+button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.file{position:relative;overflow:hidden}
+.file input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.msg{font-size:.85rem;color:var(--muted);min-height:1.2em}
+.msg.err{color:var(--accent)}
+.tools{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.tools label{display:flex;gap:6px;align-items:center;font-size:.88rem;color:var(--muted)}
+ul.list{list-style:none;margin:0;padding:0;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+li.ch{display:grid;grid-template-columns:auto 1fr auto;gap:12px;align-items:center;padding:12px 14px;border-top:1px solid var(--line)}
+li.ch:first-child{border-top:0}
+li.off .name{color:var(--off);text-decoration:line-through}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--ok)}
+li.off .dot{background:var(--off)}
+li.err .dot{background:var(--accent)}
+.meta{min-width:0;display:grid;gap:2px}
+.name{font-weight:600;overflow-wrap:anywhere}
+.name a{color:inherit;text-decoration:none}.name a:hover{text-decoration:underline}
+.id{font-family:var(--mono);font-size:.76rem;color:var(--muted);overflow-wrap:anywhere}
+.tags{display:flex;flex-wrap:wrap;gap:4px}
+.tag{font-size:.72rem;background:var(--accent-soft);color:var(--accent);border-radius:999px;padding:1px 8px}
+.acts{display:flex;gap:6px;flex-wrap:wrap;justify-content:end}
+.acts button{padding:5px 9px;font-size:.8rem}
+.edit{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px}
+.empty{padding:28px 18px;text-align:center;color:var(--muted)}
+@media (max-width:520px){li.ch{grid-template-columns:auto 1fr}.acts{grid-column:1/-1;justify-content:start}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>YouFresh</h1>
+      <p class="sub">Your channels. Changes reach your TVs within a minute.</p>
+    </div>
+    <div class="stats">
+      <div class="stat"><b id="sTotal">–</b><span>Channels</span></div>
+      <div class="stat"><b id="sOn">–</b><span>In feed</span></div>
+    </div>
+  </header>
+
+  <section class="panel">
+    <h2>Add a channel</h2>
+    <div class="row">
+      <input type="text" id="fTitle" placeholder="Channel name">
+      <input type="text" id="fId" class="mono" placeholder="Channel ID (UC…) or channel URL">
+    </div>
+    <div class="row">
+      <input type="text" id="fTags" placeholder="Tags, comma separated (optional)">
+      <button class="primary" id="addBtn">Add channel</button>
+    </div>
+    <div class="row">
+      <span class="btn file">Import Takeout CSV<input type="file" id="csv" accept=".csv,text/csv"></span>
+      <button id="refreshBtn">Refresh all feeds</button>
+      <span class="msg" id="msg"></span>
+    </div>
+  </section>
+
+  <div class="tools">
+    <input type="search" id="q" placeholder="Search name, ID or tag">
+    <label><input type="checkbox" id="showOff" checked> Show paused</label>
+    <span class="msg" id="updated"></span>
+  </div>
+
+  <ul class="list" id="list"><li class="empty">Loading channels…</li></ul>
+
+  <section class="panel">
+    <h2>Connections</h2>
+    <div class="msg" id="status">Checking…</div>
+  </section>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+let docs=[], editing=null, confirmDel=null;
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const say=(t,err)=>{const m=$('msg');m.textContent=t;m.className='msg'+(err?' err':'')};
+const ago=iso=>{if(!iso)return'';const m=(Date.now()-Date.parse(iso))/6e4;if(m<60)return Math.max(1,m|0)+' min ago';const h=m/60;if(h<24)return(h|0)+' h ago';const d=h/24;return d<60?(d|0)+' days ago':((d/30)|0)+' months ago'};
+
+async function api(path,opts={}){
+  const r=await fetch(path,{headers:{'Content-Type':'application/json'},...opts});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(j.error||('HTTP '+r.status));
+  return j;
+}
+async function load(){
+  try{const j=await api('/api/channels');docs=j.channels;$('updated').textContent=j.updated?'Feeds updated '+ago(j.updated):'';render()}
+  catch(e){$('list').innerHTML='<li class="empty">Couldn’t load channels: '+esc(e.message)+'</li>'}
+}
+function render(){
+  const q=$('q').value.trim().toLowerCase(), showOff=$('showOff').checked;
+  $('sTotal').textContent=docs.length;
+  $('sOn').textContent=docs.filter(d=>d.enabled!==false).length;
+  const rows=docs.filter(d=>(showOff||d.enabled!==false)&&(!q||(d.title+' '+d.channelId+' '+(d.tags||[]).join(' ')).toLowerCase().includes(q)));
+  const ul=$('list');
+  if(!docs.length){ul.innerHTML='<li class="empty">No channels yet. Put your Google Takeout .zip in the <b>takeout</b> folder (it imports within a minute), import subscriptions.csv above, or add a channel by ID.</li>';return}
+  if(!rows.length){ul.innerHTML='<li class="empty">No matches.</li>';return}
+  ul.innerHTML=rows.map(d=>{
+    const off=d.enabled===false, id=esc(d.channelId);
+    const sub=d.feedError?'No long-form feed ('+esc(d.feedError)+')':(d.latest?'Latest video '+ago(d.latest):'');
+    const edit=editing===d.channelId?`<div class="edit"><input type="text" id="eTitle" value="${esc(d.title)}"><input type="text" id="eTags" value="${esc((d.tags||[]).join(', '))}" placeholder="Tags"><button class="primary" data-a="save" data-id="${id}">Save</button><button data-a="cancel">Cancel</button></div>`:'';
+    const del=confirmDel===d.channelId?`<button class="primary" data-a="delyes" data-id="${id}">Confirm remove</button><button data-a="delno">Keep</button>`:`<button data-a="del" data-id="${id}">Remove</button>`;
+    return `<li class="ch${off?' off':''}${d.feedError?' err':''}"><span class="dot"></span>
+      <div class="meta"><div class="name"><a href="https://www.youtube.com/channel/${id}/videos" target="_blank" rel="noopener">${esc(d.title)}</a></div>
+      <div class="id">${id}${sub?' · '+sub:''}</div>${(d.tags||[]).length?`<div class="tags">${d.tags.map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</div>`:''}</div>
+      <div class="acts"><button data-a="toggle" data-id="${id}">${off?'Resume':'Pause'}</button><button data-a="edit" data-id="${id}">Edit</button>${del}</div>${edit}</li>`;
+  }).join('');
+}
+async function act(fn,ok){try{await fn();if(ok)say(ok);await load()}catch(e){say(e.message,true)}}
+$('list').addEventListener('click',async ev=>{
+  const b=ev.target.closest('button[data-a]');if(!b)return;
+  const id=b.dataset.id, d=docs.find(x=>x.channelId===id);
+  switch(b.dataset.a){
+    case 'toggle':act(()=>api('/api/channels/'+id,{method:'POST',body:JSON.stringify({enabled:d.enabled===false})}),d.enabled===false?'Resumed '+d.title+'.':'Paused '+d.title+'.');break;
+    case 'edit':editing=id;confirmDel=null;render();$('eTitle')?.focus();break;
+    case 'cancel':editing=null;render();break;
+    case 'save':editing=null;act(()=>api('/api/channels/'+id,{method:'POST',body:JSON.stringify({title:$('eTitle').value,tags:$('eTags').value})}),'Saved.');break;
+    case 'del':confirmDel=id;editing=null;render();break;
+    case 'delno':confirmDel=null;render();break;
+    case 'delyes':confirmDel=null;act(()=>api('/api/channels/'+id+'/delete',{method:'POST',body:'{}'}),'Removed '+d.title+'.');break;
+  }
+});
+$('addBtn').addEventListener('click',()=>act(async()=>{
+  await api('/api/channels',{method:'POST',body:JSON.stringify({title:$('fTitle').value,channelId:$('fId').value,tags:$('fTags').value})});
+  $('fTitle').value=$('fId').value=$('fTags').value='';
+},'Added.'));
+$('csv').addEventListener('change',async ev=>{
+  const f=ev.target.files[0];ev.target.value='';if(!f)return;
+  try{const j=await api('/api/import',{method:'POST',headers:{'Content-Type':'text/csv'},body:await f.text()});say(`Imported ${j.added} new; ${j.skipped} already listed.`);load()}
+  catch(e){say(e.message,true)}
+});
+$('refreshBtn').addEventListener('click',async()=>{
+  say('Refreshing all feeds…');
+  try{await api('/refresh?wait=1');say('Feeds refreshed.');load()}catch(e){say(e.message,true)}
+});
+async function loadStatus(){
+  try{
+    const s=await api('/api/status'), parts=[];
+    const h=Object.entries(s.history||{});
+    parts.push(h.length?'Watch history: '+h.map(([n,v])=>esc(n)+(v.ok?' synced '+ago(v.at):' <span style="color:var(--accent)">failing: '+esc(v.error)+'</span>')).join(', ')
+      :'Watch history: not connected. Put a youtube.com cookies.txt in the <b>cookies</b> folder to mark videos you watch elsewhere.');
+    const t=Object.entries(s.takeout||{});
+    parts.push(t.length?'Takeout imports: '+t.map(([n,v])=>esc(n)+(v.ok?` (+${v.added})`:' (failed: '+esc(v.error)+')')).join(', '):'Takeout imports: none yet.');
+    $('status').innerHTML=parts.join('<br>');
+  }catch(e){$('status').textContent='Status unavailable: '+e.message}
+}
+$('q').addEventListener('input',render);
+$('showOff').addEventListener('change',render);
+load();
+loadStatus();
+</script>
+</body>
+</html>

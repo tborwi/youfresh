@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- remove: red circle with a white minus bar -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="32dp" android:height="32dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#E0443C" android:pathData="M12,2a10,10 0,1 0,0.001 0z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M6.5,10.75h11v2.5h-11z" />
+</vector>
