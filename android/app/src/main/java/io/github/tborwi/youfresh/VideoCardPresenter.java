@@ -28,15 +28,21 @@ public class VideoCardPresenter extends Presenter {
     private static final int W = 240, H = 135; // dp
     private static final int INFO = 0xFF1C1C1C, INFO_FOCUSED = 0xFF3A3A3A;
     private final OnLongPress longPress;
-    private final boolean showChannel; // mixed-channel rows (New) show who posted it
+    private final boolean showChannel; // mixed-channel rows (New, History, Watch Later) show who posted it
+    private final boolean dimWatched;  // the History row is all watched; don't dim every card
 
     public VideoCardPresenter(OnLongPress longPress) {
         this(longPress, false);
     }
 
     public VideoCardPresenter(OnLongPress longPress, boolean showChannel) {
+        this(longPress, showChannel, true);
+    }
+
+    public VideoCardPresenter(OnLongPress longPress, boolean showChannel, boolean dimWatched) {
         this.longPress = longPress;
         this.showChannel = showChannel;
+        this.dimWatched = dimWatched;
     }
 
     static class Holder extends ViewHolder {
@@ -136,14 +142,17 @@ public class VideoCardPresenter extends Presenter {
         Video v = (Video) item;
         h.item = v;
         h.title.setText(v.title);
-        h.meta.setText(showChannel && v.channel != null ? v.channel + "  ·  " + age(v.published) : age(v.published));
+        String when = age(v.published);
+        String who = showChannel && v.channel != null ? v.channel : "";
+        h.meta.setText(who.isEmpty() ? when : when.isEmpty() ? who : who + "  ·  " + when);
         String len = length(v.duration);
         h.length.setText(len);
         h.length.setVisibility(len.isEmpty() ? View.GONE : View.VISIBLE);
-        h.badge.setVisibility(v.watched ? View.VISIBLE : View.GONE);
-        h.bar.setVisibility(v.watched ? View.VISIBLE : View.GONE);
-        h.thumb.setAlpha(v.watched ? 0.45f : 1f);
-        h.title.setTextColor(v.watched ? 0xFF9A9A9A : 0xFFF2F2F2);
+        boolean dim = v.watched && dimWatched;
+        h.badge.setVisibility(dim ? View.VISIBLE : View.GONE);
+        h.bar.setVisibility(dim ? View.VISIBLE : View.GONE);
+        h.thumb.setAlpha(dim ? 0.45f : 1f);
+        h.title.setTextColor(dim ? 0xFF9A9A9A : 0xFFF2F2F2);
         Glide.with(h.thumb.getContext())
                 .load(v.thumb)
                 .placeholder(new ColorDrawable(0xFF2A2A2A))

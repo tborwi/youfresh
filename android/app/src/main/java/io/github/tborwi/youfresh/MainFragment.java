@@ -11,6 +11,7 @@ import androidx.annotation.Nullable;
 import androidx.leanback.app.BackgroundManager;
 import androidx.leanback.app.BrowseSupportFragment;
 import androidx.leanback.widget.ArrayObjectAdapter;
+import androidx.leanback.widget.ClassPresenterSelector;
 import androidx.leanback.widget.FocusHighlight;
 import androidx.leanback.widget.HeaderItem;
 import androidx.leanback.widget.ListRow;
@@ -27,7 +28,11 @@ import java.util.concurrent.Executors;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-/** One row per channel, newest video on the left; rows ordered by latest upload. Settings row on top. */
+/**
+ * Settings row on top, then Newest Videos (unwatched, last 48 hours), History and Watch Later,
+ * then an "All Subscriptions" header with one row per channel, newest video on the left, rows
+ * ordered by latest upload.
+ */
 public class MainFragment extends BrowseSupportFragment {
     private static final long STALE_MS = 15 * 60 * 1000;
     private static final int BLACK = 0xFF000000;
@@ -35,7 +40,7 @@ public class MainFragment extends BrowseSupportFragment {
     private final Handler main = new Handler(Looper.getMainLooper());
     private ArrayObjectAdapter rows;
     private long loadedAt = 0;
-    private final Map<String, ArrayObjectAdapter> rowOf = new HashMap<>();
+    private final List<ArrayObjectAdapter> videoRows = new ArrayList<>(); // every row of video cards
     private static final long NEW_WINDOW_MS = 48L * 60 * 60 * 1000;
     private ArrayObjectAdapter newRow; // unwatched videos from the last 48 hours
 
@@ -49,7 +54,10 @@ public class MainFragment extends BrowseSupportFragment {
         ListRowPresenter rp = new ListRowPresenter(FocusHighlight.ZOOM_FACTOR_MEDIUM, false);
         rp.setShadowEnabled(true);
         rp.setSelectEffectEnabled(false);
-        rows = new ArrayObjectAdapter(rp);
+        ClassPresenterSelector ps = new ClassPresenterSelector();
+        ps.addClassPresenter(ListRow.class, rp);
+        ps.addClassPresenter(SectionHeaderRow.class, new SectionHeaderPresenter());
+        rows = new ArrayObjectAdapter(ps);
         setAdapter(rows);
 
         setOnItemViewClickedListener((OnItemViewClickedListener) (ivh, item, rvh, row) -> {
@@ -95,7 +103,8 @@ public class MainFragment extends BrowseSupportFragment {
             try {
                 JSONObject feed = new JSONObject(Api.get("/feed.json", 20000));
                 JSONArray chans = feed.getJSONArray("channels");
-                main.post(() -> render(chans));
+                JSONArray lists = feed.optJSONArray("lists"); // History / Watch Later (server 1.1+)
+                main.post(() -> render(chans, lists == null ? new JSONArray() : lists));
             } catch (Exception e) {
                 main.post(() -> {
                     if (!isAdded()) return;
@@ -119,11 +128,25 @@ public class MainFragment extends BrowseSupportFragment {
         rows.add(settingsRow());
     }
 
-    private void render(JSONArray chans) {
+    private static Video parse(JSONObject o, String channel) {
+        Video v = new Video();
+        v.id = o.optString("id");
+        v.title = o.optString("title");
+        v.published = o.optString("published");
+        v.thumb = o.optString("thumb");
+        v.thumbFallback = o.optString("thumbFallback");
+        v.url = o.optString("url");
+        v.channel = channel != null ? channel : o.optString("channel");
+        v.duration = o.optInt("duration", 0);
+        v.watched = o.optBoolean("watched", false);
+        return v;
+    }
+
+    private void render(JSONArray chans, JSONArray lists) {
         if (!isAdded()) return;
         rows.clear();
         rows.add(settingsRow());
-        rowOf.clear();
+        videoRows.clear();
         VideoCardPresenter.OnLongPress toggle = v -> {
             setWatched(v, !v.watched);
             Toast.makeText(requireContext(), v.watched ? "Marked watched" : "Marked unwatched", Toast.LENGTH_SHORT).show();
@@ -131,6 +154,7 @@ public class MainFragment extends BrowseSupportFragment {
         VideoCardPresenter cp = new VideoCardPresenter(toggle);
         long cutoff = System.currentTimeMillis() - NEW_WINDOW_MS;
         List<Video> fresh = new ArrayList<>();
+        List<ListRow> channelRows = new ArrayList<>();
         for (int i = 0; i < chans.length(); i++) {
             JSONObject c = chans.optJSONObject(i);
             if (c == null) continue;
@@ -141,29 +165,49 @@ public class MainFragment extends BrowseSupportFragment {
             for (int j = 0; j < vids.length(); j++) {
                 JSONObject o = vids.optJSONObject(j);
                 if (o == null) continue;
-                Video v = new Video();
-                v.id = o.optString("id");
-                v.title = o.optString("title");
-                v.published = o.optString("published");
-                v.thumb = o.optString("thumb");
-                v.thumbFallback = o.optString("thumbFallback");
-                v.url = o.optString("url");
-                v.channel = name;
-                v.duration = o.optInt("duration", 0);
-                v.watched = o.optBoolean("watched", false);
+                Video v = parse(o, name);
                 items.add(v);
-                rowOf.put(v.id, items);
                 if (!v.watched && publishedMs(v.published) >= cutoff) fresh.add(v);
             }
+            videoRows.add(items);
             String age = VideoCardPresenter.age(c.optString("latest"));
-            rows.add(new ListRow(new HeaderItem(i, name + "  ·  " + age), items));
+            channelRows.add(new ListRow(new HeaderItem(i, name + "  ·  " + age), items));
         }
+
+        // Newest Videos: the same Video objects as the channel rows, so marking one updates both
         newRow = null;
         if (!fresh.isEmpty()) {
             fresh.sort((a, b) -> b.published.compareTo(a.published));
             newRow = new ArrayObjectAdapter(new VideoCardPresenter(toggle, true));
             newRow.addAll(0, fresh);
-            rows.add(1, new ListRow(new HeaderItem(-2, "New  ·  last 48 hours  ·  " + fresh.size() + " unwatched"), newRow));
+            videoRows.add(newRow);
+            rows.add(new ListRow(new HeaderItem(-2, "Newest Videos  ·  last 48 hours  ·  " + fresh.size() + " unwatched"), newRow));
+        }
+
+        // History and Watch Later, synced from YouTube by the server
+        VideoCardPresenter historyCards = new VideoCardPresenter(toggle, true, false);
+        VideoCardPresenter laterCards = new VideoCardPresenter(toggle, true);
+        for (int i = 0; i < lists.length(); i++) {
+            JSONObject l = lists.optJSONObject(i);
+            JSONArray vids = l == null ? null : l.optJSONArray("videos");
+            if (vids == null || vids.length() == 0) continue;
+            boolean history = "history".equals(l.optString("key"));
+            ArrayObjectAdapter items = new ArrayObjectAdapter(history ? historyCards : laterCards);
+            for (int j = 0; j < vids.length(); j++) {
+                JSONObject o = vids.optJSONObject(j);
+                if (o != null) items.add(parse(o, null));
+            }
+            videoRows.add(items);
+            String title = l.optString("title", history ? "History" : "Watch Later");
+            String note = history ? "most recent first" : vids.length() + " videos";
+            String synced = VideoCardPresenter.age(l.optString("updated"));
+            rows.add(new ListRow(new HeaderItem(-3 - i, title + "  ·  " + note
+                    + (synced.isEmpty() ? "" : "  ·  synced " + synced)), items));
+        }
+
+        if (!channelRows.isEmpty()) {
+            rows.add(new SectionHeaderRow("All Subscriptions"));
+            rows.addAll(rows.size(), channelRows);
         }
         loadedAt = System.currentTimeMillis();
         if (chans.length() == 0) {
@@ -171,20 +215,32 @@ public class MainFragment extends BrowseSupportFragment {
                     + " in a web browser to add them, or drop your Google Takeout zip in the server's takeout folder.",
                     Toast.LENGTH_LONG).show();
         }
-        if (rows.size() > 1) setSelectedPosition(1, false); // land on New (or the newest channel), Settings just above
+        // land on the first video row (Newest Videos, usually), Settings just above
+        for (int i = 1; i < rows.size(); i++) {
+            if (rows.get(i) instanceof ListRow) {
+                setSelectedPosition(i, false);
+                break;
+            }
+        }
     }
 
     /** Update the card right away, then tell the server so other TVs see it too. */
     private void setWatched(Video v, boolean on) {
-        v.watched = on;
-        ArrayObjectAdapter a = rowOf.get(v.id);
-        if (a != null) {
-            int i = a.indexOf(v);
-            if (i >= 0) a.notifyArrayItemRangeChanged(i, 1);
+        // the same video can be in several rows (its channel, Newest, History, Watch Later)
+        for (ArrayObjectAdapter a : videoRows) {
+            for (int i = 0; i < a.size(); i++) {
+                Object o = a.get(i);
+                if (o instanceof Video && ((Video) o).id.equals(v.id)) {
+                    ((Video) o).watched = on;
+                    a.notifyArrayItemRangeChanged(i, 1);
+                }
+            }
         }
+        v.watched = on;
         if (on && newRow != null) {
-            int j = newRow.indexOf(v);
-            if (j >= 0) newRow.removeItems(j, 1); // watched videos leave the New row
+            for (int j = newRow.size() - 1; j >= 0; j--) { // watched videos leave Newest Videos
+                if (((Video) newRow.get(j)).id.equals(v.id)) newRow.removeItems(j, 1);
+            }
         }
         String id = v.id;
         io.execute(() -> {

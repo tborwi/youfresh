@@ -11,7 +11,8 @@ services:
       - PUID=1000                 # your user and group ids (run `id` to see them), so the
       - PGID=1000                 #   takeout/ and cookies/ folders are yours to copy files into
       - REFRESH_MINUTES=30        # how often to check channels for new videos
-      - HISTORY_HOURS=6           # how often to sync YouTube watch history (if cookies are added)
+      - HISTORY_HOURS=2           # how often to sync YouTube history and Watch Later (if cookies are added)
+      - SUBS_SYNC_HOUR=3          # local hour of the nightly YouTube subscriptions sync (-1 = off)
     volumes:
       # Creates ./youfresh/{takeout,cookies,data} next to this file on first start
       - ./youfresh:/youfresh

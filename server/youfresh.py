@@ -10,7 +10,8 @@ HTTP (default port 8099):
   /                 channel manager web page
   /feed.json        channels sorted by latest upload, newest videos first (used by the TV app)
   /api/channels     list/add/edit/remove channels
-  /api/status       takeout imports and watch-history sync status
+  /api/status       takeout imports, watch-history and subscriptions sync status
+  /api/subscriptions  nightly YouTube subscriptions sync state (?sync=1 runs it now)
   /refresh          re-pull all feeds now (?wait=1 to block until done)
   /health
 """
@@ -98,6 +99,8 @@ def duration_worker():
                 if not any(s is not None for _, s in got):
                     time.sleep(300)  # YouTube refusing; back off
                 continue
+            if fill_channel_names():
+                continue
         except Exception:
             log.exception("duration worker")
         time.sleep(60)
@@ -111,7 +114,65 @@ def enriched_feed():
     out["channels"] = [{**c, "videos": [{**v, "duration": durations.get(v["id"], 0),
                                          "watched": v["id"] in watched} for v in c["videos"]]}
                        for c in feed["channels"]]
+    out["lists"] = account_lists(feed)
     return out
+
+
+def account_lists(feed):
+    """History and Watch Later rows for each cookies account, as feed-style videos."""
+    known = {v["id"]: (c["title"], v) for c in feed.get("channels", []) for v in c["videos"]}
+    accounts = sorted(n for n in lists if os.path.exists(os.path.join(COOKIES, n + ".txt"))
+                      or os.path.exists(os.path.join(COOKIES, "youtube-" + n + ".txt")))
+    out = []
+    for name in accounts:
+        suffix = f"  ·  {name}" if len(accounts) > 1 else ""
+        for key, title in (("history", "History"), ("watchLater", "Watch Later")):
+            items = lists[name].get(key)
+            if not items:
+                continue
+            vids = []
+            for it in items:
+                vid = it["id"]
+                chan, fv = known.get(vid, (None, {}))
+                vids.append({"id": vid, "title": it["title"] or fv.get("title", ""),
+                             "channel": it.get("channel") or chan or vchannels.get(vid, ""),
+                             "published": fv.get("published", ""),
+                             "thumb": f"https://i.ytimg.com/vi/{vid}/hq720.jpg",
+                             "thumbFallback": f"https://i.ytimg.com/vi/{vid}/mqdefault.jpg",
+                             "url": f"https://www.youtube.com/watch?v={vid}",
+                             "duration": durations.get(vid, 0), "watched": vid in watched})
+            out.append({"key": key, "account": name, "title": title + suffix,
+                        "updated": lists[name].get(key + "At"), "videos": vids})
+    return out
+
+
+def fetch_channel_name(vid):
+    url = "https://www.youtube.com/oembed?format=json&url=https://www.youtube.com/watch?v=" + vid
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "YouFresh/1.0"}),
+                                    timeout=15) as r:
+            return vid, json.load(r).get("author_name") or ""
+    except urllib.error.HTTPError as e:
+        return vid, "" if e.code in (401, 403, 404) else None  # private/removed: don't retry forever
+    except Exception:
+        return vid, None
+
+
+def fill_channel_names():
+    """History entries from yt-dlp have no channel name; look them up once each (oEmbed)."""
+    feed_ids = {v["id"] for c in (state["feed"] or {}).get("channels", []) for v in c["videos"]}
+    todo = [it["id"] for a in list(lists.values()) for it in a.get("history", [])
+            if not it.get("channel") and it["id"] not in vchannels and it["id"] not in feed_ids][:30]
+    if not todo:
+        return False
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        got = list(ex.map(fetch_channel_name, todo))
+    with META_LOCK:
+        for vid, name in got:
+            if name is not None:
+                vchannels[vid] = name
+        _save(VCHANNELS, vchannels)
+    return any(n is not None for _, n in got)
 
 
 def set_watched(vid, on):
@@ -134,31 +195,91 @@ def set_watched(vid, on):
 # in .txt; the file name labels the account). yt-dlp reads each account's watch history and
 # those videos are marked watched in the feed.
 OVERRIDES = os.path.join(DATA, "watched_overrides.json")
-HISTORY_HOURS = float(os.environ.get("HISTORY_HOURS", "6"))
+HISTORY_HOURS = float(os.environ.get("HISTORY_HOURS", "2"))
 HISTORY_DEPTH = int(os.environ.get("HISTORY_DEPTH", "300"))
+# Videos shown in the History and Watch Later rows
+LIST_ROW_SIZE = int(os.environ.get("LIST_ROW_SIZE", "60"))
+# Local hour (TZ) of the nightly YouTube subscriptions sync; -1 turns it off
+SUBS_SYNC_HOUR = int(os.environ.get("SUBS_SYNC_HOUR", "3"))
+LISTS = os.path.join(DATA, "lists.json")          # {account: {history: [...], watchLater: [...]}}
+VCHANNELS = os.path.join(DATA, "video_channels.json")  # {videoId: channel name} for History cards
+SUBS = os.path.join(DATA, "subs_sync.json")       # nightly subscriptions sync state
 overrides = _load(OVERRIDES)
+lists = _load(LISTS)
+vchannels = _load(VCHANNELS)
+subs_state = _load(SUBS)
 history_status = {}
 
 
-def sync_history_account(path):
+def _now():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def account_name(path):
+    return os.path.basename(path).removesuffix(".txt").removeprefix("youtube-") or "account"
+
+
+def ytdlp_flat(cookie_path, url, end=None, timeout=240):
+    """Run yt-dlp --flat-playlist as the account in cookie_path. Returns (entries, error)."""
     import subprocess, shutil, tempfile
-    name = os.path.basename(path).removesuffix(".txt").removeprefix("youtube-") or "account"
     tmp = tempfile.mkdtemp()
     cj = os.path.join(tmp, "cookies.txt")
-    shutil.copy(path, cj)  # yt-dlp rewrites its cookie file; keep the original untouched
+    shutil.copy(cookie_path, cj)  # yt-dlp rewrites its cookie file; keep the original untouched
     try:
-        r = subprocess.run(["yt-dlp", "--cookies", cj, "--flat-playlist", "-J", "--no-warnings",
-                            "--playlist-end", str(HISTORY_DEPTH), ":ythistory"],
-                           capture_output=True, text=True, timeout=240)
+        cmd = ["yt-dlp", "--cookies", cj, "--flat-playlist", "-J", "--no-warnings"]
+        if end:
+            cmd += ["--playlist-end", str(end)]
+        r = subprocess.run(cmd + [url], capture_output=True, text=True, timeout=timeout)
         if r.returncode != 0:
             err = (r.stderr.strip().splitlines() or ["yt-dlp failed"])[-1][:200]
             if "sign in" in err.lower() or "cookies" in err.lower() or "login" in err.lower():
                 err += " (the cookies may have expired; export a fresh cookies.txt)"
-            history_status[name] = {"ok": False, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "error": err}
+            return None, err
+        return [e for e in (json.loads(r.stdout).get("entries") or []) if e and e.get("id")], None
+    except FileNotFoundError:
+        return None, "yt-dlp not installed"
+    except Exception as e:
+        return None, str(e)[:200]
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def list_items(entries):
+    """Trim yt-dlp playlist entries to what a History / Watch Later card needs (long-form only)."""
+    out = []
+    for e in entries:
+        if "/shorts/" in (e.get("url") or "") or not _re.fullmatch(r"[0-9A-Za-z_-]{11}", e["id"]):
+            continue
+        if e.get("duration"):
+            durations.setdefault(e["id"], int(e["duration"]))
+        out.append({"id": e["id"], "title": e.get("title") or "",
+                    "channel": e.get("channel") or e.get("uploader") or ""})
+        if len(out) >= LIST_ROW_SIZE:
+            break
+    return out
+
+
+def sync_history_account(path):
+    name = account_name(path)
+    try:
+        entries, err = ytdlp_flat(path, ":ythistory", HISTORY_DEPTH)
+        if err:
+            history_status[name] = {"ok": False, "at": _now(), "error": err}
             log.warning("history sync %s failed: %s", name, err)
             return
-        ids = [e.get("id") for e in (json.loads(r.stdout).get("entries") or []) if e and e.get("id")]
-        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        ids = [e["id"] for e in entries]
+        now = _now()
+        acct = {**lists.get(name, {}), "history": list_items(entries), "historyAt": now}
+        wl, wl_err = ytdlp_flat(path, "https://www.youtube.com/playlist?list=WL", LIST_ROW_SIZE * 2)
+        if wl_err:
+            log.warning("watch later sync %s failed: %s", name, wl_err)  # keep the previous row
+        else:
+            acct["watchLater"] = list_items(wl)
+            acct["watchLaterAt"] = now
+        with META_LOCK:
+            lists[name] = acct
+            _save(LISTS, lists)
+            _save(DURS, durations)
         added = 0
         with META_LOCK:
             for vid in ids:
@@ -167,15 +288,14 @@ def sync_history_account(path):
                     added += 1
             if added:
                 _save(WATCHED, watched)
-        history_status[name] = {"ok": True, "at": now, "seen": len(ids), "newlyWatched": added}
-        log.info("history sync %s: %d videos in history, %d newly marked watched", name, len(ids), added)
-    except FileNotFoundError:
-        history_status[name] = {"ok": False, "error": "yt-dlp not installed"}
+        history_status[name] = {"ok": True, "at": now, "seen": len(ids), "newlyWatched": added,
+                                "watchLater": len(acct.get("watchLater", [])),
+                                **({"watchLaterError": wl_err} if wl_err else {})}
+        log.info("history sync %s: %d videos in history, %d newly marked watched, %s", name, len(ids), added,
+                 f"watch later failed ({wl_err})" if wl_err else f"{len(acct['watchLater'])} in watch later row")
     except Exception as e:
         history_status[name] = {"ok": False, "error": str(e)[:200]}
         log.exception("history sync %s", name)
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
 
 
 HISTORY_LOCK = threading.Lock()
@@ -215,6 +335,97 @@ def history_worker():
             last_sync = time.time()
         seen = files
         time.sleep(15)
+
+
+# --- Nightly YouTube subscriptions sync (one way: YouTube -> YouFresh) -------------------
+# Reads each cookies account's subscriptions. New subscriptions are added; channels that came
+# from YouTube or a Takeout import and are no longer subscribed are removed. Channels added by
+# hand are never removed, pausing is kept, and nothing is ever written back to YouTube.
+# A channel you remove in YouFresh is remembered in "excluded" so the sync doesn't re-add it.
+SUBS_LOCK = threading.Lock()
+SYNCED_SOURCES = ("youtube", "takeout")
+
+
+def _save_subs():
+    with META_LOCK:
+        _save(SUBS, subs_state)
+
+
+def sync_subscriptions():
+    import glob
+    if not SUBS_LOCK.acquire(blocking=False):
+        return {"status": "busy"}
+    try:
+        paths = sorted(glob.glob(os.path.join(COOKIES, "*.txt")))
+        if not paths:
+            return {"status": "no cookies"}
+        subs, errors = {}, []
+        for path in paths:
+            entries, err = ytdlp_flat(path, "https://www.youtube.com/feed/channels", timeout=300)
+            if err:
+                errors.append(f"{account_name(path)}: {err}")
+                continue
+            for e in entries:
+                if ID_RE.fullmatch(e["id"]):
+                    subs.setdefault(e["id"], e.get("title") or e.get("channel") or e["id"])
+        result = {"at": _now(), "ok": not errors, "subscribed": len(subs), "added": [], "removed": []}
+        if errors:
+            result["error"] = "; ".join(errors)[:300]
+        excluded = subs_state.get("excluded", {})
+        with ROSTER_LOCK:
+            items = read_all()
+            have = {c.get("channelId") for c in items}
+            for cid, title in subs.items():
+                if cid not in have and cid not in excluded:
+                    items.append({"channelId": cid, "title": title, "tags": [], "enabled": True,
+                                  "addedAt": _now(), "source": "youtube"})
+                    result["added"].append(title)
+            # Only remove when every account answered and the list looks complete, so an
+            # expired cookie or a YouTube hiccup can never wipe the roster.
+            synced = [c for c in items if c.get("source") in SYNCED_SOURCES]
+            if not errors and subs and len(subs) >= len(synced) // 2:
+                keep = []
+                for c in items:
+                    if c.get("source") in SYNCED_SOURCES and c.get("channelId") not in subs:
+                        result["removed"].append(c.get("title") or c.get("channelId"))
+                    else:
+                        keep.append(c)
+                items = keep
+            elif not errors:
+                result["note"] = "subscription list looked incomplete; nothing removed"
+            if result["added"] or result["removed"]:
+                write_all(items)
+        subs_state["last"] = result
+        _save_subs()
+        log.info("subscriptions sync: %d subscribed, +%d, -%d%s", len(subs), len(result["added"]),
+                 len(result["removed"]), f" (errors: {result['error']})" if errors else "")
+        return result
+    except Exception as e:
+        log.exception("subscriptions sync")
+        subs_state["last"] = {"at": _now(), "ok": False, "error": str(e)[:200]}
+        _save_subs()
+        return subs_state["last"]
+    finally:
+        SUBS_LOCK.release()
+
+
+def subs_worker():
+    """Run the subscriptions sync once a night at SUBS_SYNC_HOUR (local time), and once soon
+    after startup if it has never run."""
+    if SUBS_SYNC_HOUR < 0:
+        return
+    time.sleep(90)
+    while True:
+        try:
+            lt = time.localtime()
+            today = time.strftime("%Y-%m-%d", lt)
+            if _cookie_files() and (not subs_state.get("last") or
+                                    (lt.tm_hour == SUBS_SYNC_HOUR and subs_state.get("ranOn") != today)):
+                subs_state["ranOn"] = today
+                sync_subscriptions()
+        except Exception:
+            log.exception("subscriptions worker")
+        time.sleep(300)
 
 
 def load_roster():
@@ -272,6 +483,8 @@ def roster_add(body):
         items = read_all()
         if any(c.get("channelId") == m.group(0) for c in items):
             return 409, {"error": "That channel is already in the roster."}
+        if subs_state.get("excluded", {}).pop(m.group(0), None):
+            _save_subs()  # added back by hand: the nightly sync may keep it again
         items.append({"channelId": m.group(0), "title": title, "tags": clean_tags(body.get("tags")),
                       "enabled": True, "addedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                       "source": "manual"})
@@ -301,6 +514,9 @@ def roster_delete(cid):
         keep = [c for c in items if c.get("channelId") != cid]
         if len(keep) == len(items):
             return 404, {"error": "Channel not found."}
+        gone = next(c for c in items if c.get("channelId") == cid)
+        subs_state.setdefault("excluded", {})[cid] = gone.get("title") or cid
+        _save_subs()  # the nightly subscriptions sync won't add it back
         write_all(keep)
     return 200, {"ok": True}
 
@@ -619,6 +835,8 @@ class H(BaseHTTPRequestHandler):
         if p == "/api/status":
             return self._json(200, {"takeout": takeout_status, "history": history_status,
                                     "historyEveryHours": HISTORY_HOURS,
+                                    "subscriptions": {**subs_state.get("last", {}), "nightlyHour": SUBS_SYNC_HOUR,
+                                                      "excluded": len(subs_state.get("excluded", {}))},
                                     "channels": len(read_all()),
                                     "feedUpdated": (state["feed"] or {}).get("updated")})
         if p == "/api/history":
@@ -626,6 +844,10 @@ class H(BaseHTTPRequestHandler):
                 threading.Thread(target=sync_history, daemon=True).start()
                 return self._json(202, {"status": "syncing"})
             return self._json(200, {"accounts": history_status, "everyHours": HISTORY_HOURS})
+        if p == "/api/subscriptions":
+            if "sync=1" in self.path:  # ?sync=1 runs the YouTube subscriptions sync now and waits
+                return self._json(200, sync_subscriptions())
+            return self._json(200, {**subs_state, "nightlyHour": SUBS_SYNC_HOUR})
         if p == "/health":
             return self._send(200, json.dumps({"ok": True, "updated": (state["feed"] or {}).get("updated")}))
         self._send(404, json.dumps({"error": "not found"}))
@@ -644,6 +866,7 @@ if __name__ == "__main__":
     threading.Thread(target=loop, daemon=True).start()
     threading.Thread(target=duration_worker, daemon=True).start()
     threading.Thread(target=history_worker, daemon=True).start()
+    threading.Thread(target=subs_worker, daemon=True).start()
     log.info("YouFresh listening on :%d (data %s, takeout %s, cookies %s)", PORT, DATA, TAKEOUT, COOKIES)
     import socket
 

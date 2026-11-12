@@ -171,6 +171,12 @@ async function loadStatus(){
     const h=Object.entries(s.history||{});
     parts.push(h.length?'Watch history: '+h.map(([n,v])=>esc(n)+(v.ok?' synced '+ago(v.at):' <span style="color:var(--accent)">failing: '+esc(v.error)+'</span>')).join(', ')
       :'Watch history: not connected. Put a youtube.com cookies.txt in the <b>cookies</b> folder to mark videos you watch elsewhere.');
+    const sb=s.subscriptions||{}, hr=sb.nightlyHour;
+    const when=hr>=0?` Syncs nightly at ${hr}:00.`:' Nightly sync is off.';
+    parts.push(!sb.at?'YouTube subscriptions: not synced yet.'+when
+      :'YouTube subscriptions: '+(sb.ok?`synced ${ago(sb.at)}: ${sb.subscribed} subscribed, +${sb.added.length}, −${sb.removed.length}`
+        :'<span style="color:var(--accent)">failing: '+esc(sb.error)+'</span>')+'.'+when
+        +(sb.excluded?` ${sb.excluded} removed here stay removed.`:''));
     const t=Object.entries(s.takeout||{});
     parts.push(t.length?'Takeout imports: '+t.map(([n,v])=>esc(n)+(v.ok?` (+${v.added})`:' (failed: '+esc(v.error)+')')).join(', '):'Takeout imports: none yet.');
     $('status').innerHTML=parts.join('<br>');
